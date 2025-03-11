@@ -594,11 +594,11 @@ def plot_feature(WC):
         'Max_Coeff', 'Max_Base', 'Std_Coeff', 'Std_Base', 'Kurt_Coeff', 'Kurt_Base',
         'Skewness_Coeff', 'Skewness_Base', 'Kurt_Time', 'Skewness_Time'
     ]
-    # y = np.zeros((8, 1))
-    # y[4:] = 1
-    # results = feature_evaluation(feature_matrix, np.squeeze(y))
-    # print_feature_importance(results, feature_names=feature_names)
-    # plot_feature_distributions(feature_matrix, np.squeeze(y), feature_names=feature_names)
+    y = np.zeros((8, 1))
+    y[4:] = 1
+    results = feature_evaluation(feature_matrix, np.squeeze(y))
+    print_feature_importance(results, feature_names=feature_names)
+    plot_feature_distributions(feature_matrix, np.squeeze(y), feature_names=feature_names)
     plot_feature_distributions_single(feature_matrix, feature_names)
     fig, ax = plt.subplots(figsize=(6.5, 4), constrained_layout=True)
     for i in range(feature_matrix.shape[0]):
