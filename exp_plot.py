@@ -34,7 +34,7 @@ def plot_comparison(trad_predict, best_predict, real_out, condition_name, output
     best_predict = np.array(best_predict)
 
     # Create figure with IEEE Transaction style
-    fig, ax = plt.subplots(figsize=(6.5, 4), constrained_layout=True)
+    fig, ax = plt.subplots(figsize=(7, 3), constrained_layout=True)
     cut_range = (0.1, 0.8)
     start = int(len(real_out) * cut_range[0])
     end = int(len(real_out) * cut_range[1])
@@ -66,7 +66,16 @@ def plot_comparison(trad_predict, best_predict, real_out, condition_name, output
     ax.set_ylabel(y_label, fontsize=14)
 
     # Add legend in top-left corner
-    ax.legend(loc='upper left', fontsize=12, framealpha=1, edgecolor='black')
+    # ax.legend(loc='upper left', fontsize=12, framealpha=1, edgecolor='black')
+    ax.legend(
+        loc='upper left',  # 图例自身的左上角作为定位锚点
+        fontsize=12,
+        bbox_to_anchor=(0, 1),  # 将图例左上角与 Axes 的 (0, 1) 对齐
+        fancybox=False,  # 关闭圆角
+        edgecolor='black',  # 设置边框颜色
+        framealpha=1,  # 边框透明度为不透明
+        borderaxespad=0  # 去掉与坐标轴的间距（可按需调整）
+    )
 
     # Save figure if path provided
     if save_path:
