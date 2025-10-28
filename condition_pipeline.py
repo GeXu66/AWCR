@@ -1,4 +1,5 @@
 import os
+import re
 import numpy as np
 import scipy.io as scio
 from typing import List, Dict
@@ -6,9 +7,10 @@ import matplotlib.pyplot as plt
 from sklearn.metrics import mean_squared_error, r2_score, mean_absolute_percentage_error
 
 from feature_library import build_feature_library, compute_feature_for_name, extract_condition_prefix
-from evm_classifier import EVMClassifier
 from models_manager import MIMOFIRManager
 from MIMOFIR import MIMOFIR
+from recognizers import get_recognizer
+import config
 
 
 def read_io_for_names(names: List[str], channel_in: List[int], channel_out: List[int], mean_flag: bool) -> tuple:
@@ -30,23 +32,36 @@ def pipeline(trainlist: List[List[str]],
              results_dir: str = os.path.join('result', 'pipeline')) -> None:
     os.makedirs(results_dir, exist_ok=True)
 
-    # 1) Build feature library for known conditions
-    saved = build_feature_library(trainlist, feature_dir=feature_dir)
-    class_to_features: Dict[str, np.ndarray] = {}
+    # Merge training groups by coarse prefix (e.g., SW20/SW25/SW35 -> SW)
+    coarse_to_names: Dict[str, List[str]] = {}
     for group in trainlist:
         prefix = extract_condition_prefix(group)
-        F = np.load(os.path.join(feature_dir, f'{prefix}.npy'))
-        class_to_features[prefix] = F
+        if prefix not in coarse_to_names:
+            coarse_to_names[prefix] = []
+        coarse_to_names[prefix].extend(group)
+    merged_trainlist: List[List[str]] = list(coarse_to_names.values())
 
-    # 2) Train EVM
-    evm = EVMClassifier(tail_frac=0.5, reject_threshold=0.5)
-    evm.fit(class_to_features)
+    # 1) Build feature library for known conditions (persist features for analysis/EVM)
+    build_feature_library(merged_trainlist, feature_dir=feature_dir)
+
+    # 2) Build recognizer based on config and fit
+    recognizer = get_recognizer(
+        strategy=config.RECOGNITION_STRATEGY,
+        evm_tail_frac=getattr(config, 'EVM_TAIL_FRAC', 0.5),
+        evm_reject_threshold=getattr(config, 'EVM_REJECT_THRESHOLD', 0.5),
+        hmm_n_states=getattr(config, 'HMM_N_STATES', 3),
+        hmm_cov_reg=getattr(config, 'HMM_COV_REG', 1e-6),
+        hmm_n_iter=getattr(config, 'HMM_N_ITER', 15),
+        hmm_glrt_quantile=getattr(config, 'HMM_GLRT_QUANTILE', 0.1),
+        random_state=getattr(config, 'RANDOM_STATE', 0),
+    )
+    recognizer.fit_groups(merged_trainlist)
 
     # 3) Prepare MIMOFIR manager
     manager = MIMOFIRManager(past_order, future_order, channel_in, channel_out, mean_flag, models_dir=models_dir)
 
-    # 4) Ensure models exist for known classes
-    for group in trainlist:
+    # 4) Ensure models exist for known classes (merged)
+    for group in merged_trainlist:
         prefix = extract_condition_prefix(group)
         if not manager.exists(prefix):
             manager.train_from_files(prefix, group, piece='all')
@@ -66,14 +81,14 @@ def pipeline(trainlist: List[List[str]],
         print('-------------------Processing Test Condition-------------------')
         print(f'Reading test condition: {test_name}')
 
-        feat = compute_feature_for_name(test_name)
-        cls_hat, prob, scores = evm.predict(feat)
+        # Recognize condition via configured strategy
+        cls_hat, prob, scores = recognizer.predict_on_name(test_name)
 
-        # Log EVM scores
+        # Log recognition scores
         sorted_scores = sorted(scores.items(), key=lambda kv: kv[1], reverse=True)
         top_items = ', '.join([f"{k}:{v:.3f}" for k, v in sorted_scores[:5]])
-        print(f'EVM predicted probabilities (top-5): {top_items}')
-        print(f'EVM decision: {cls_hat} (p={prob:.3f})')
+        print(f'Recognizer({config.RECOGNITION_STRATEGY}) predicted (top-5): {top_items}')
+        print(f'Recognizer decision: {cls_hat} (p={prob:.3f})')
 
         # Read input/output for this test
         U_test, Y_test = read_io_for_names(test_names, channel_in, channel_out, mean_flag)
@@ -87,7 +102,19 @@ def pipeline(trainlist: List[List[str]],
             print(f'Unknown condition detected. Using fallback known class for estimation: {fallback}')
             Theta = manager.load(fallback)
             if Theta is None:
-                Theta = manager.train_from_files(fallback, [fallback + '_01', fallback + '_02'], piece='all')
+                # Train from merged group corresponding to fallback
+                group_for_fallback: List[str] = []
+                for grp in merged_trainlist:
+                    if extract_condition_prefix(grp) == fallback:
+                        group_for_fallback = grp
+                        break
+                if not group_for_fallback:
+                    group_for_fallback = coarse_to_names.get(fallback, [])
+                if not group_for_fallback:
+                    # If still empty, cannot proceed for estimation
+                    print(f'Warning: no training data found for fallback class {fallback}. Skipping estimation.')
+                    continue
+                Theta = manager.train_from_files(fallback, group_for_fallback, piece='all')
             Y_pred = manager.estimate(Theta, U_test)
 
             # manage unknown labels pool (max 3)
@@ -128,8 +155,8 @@ def pipeline(trainlist: List[List[str]],
             # known class, ensure model and estimate
             Theta = manager.load(cls_hat)
             if Theta is None:
-                # train from existing known data group
-                for group in trainlist:
+                # train from existing known data group (merged)
+                for group in merged_trainlist:
                     if extract_condition_prefix(group) == cls_hat:
                         Theta = manager.train_from_files(cls_hat, group, piece='all')
                         break
@@ -162,6 +189,11 @@ def _ensure_ieee_style() -> None:
     except Exception:
         plt.style.use('default')
     plt.rcParams['font.family'] = 'Times New Roman'
+
+
+def _sanitize_filename(name: str) -> str:
+    # Keep letters, numbers, underscore, hyphen, and dot
+    return re.sub(r'[^A-Za-z0-9._-]', '_', name).strip(' .')
 
 
 def _save_test_metrics_and_plot(Y_true: np.ndarray,
@@ -207,8 +239,27 @@ def _save_test_metrics_and_plot(Y_true: np.ndarray,
         c = j % n_cols
         fig.delaxes(axes[r, c])
     fig.suptitle(f'{test_name} - {label_str}', fontsize=12)
-    fig.savefig(os.path.join(out_dir, f'{test_name}_ieee.png'), dpi=300, bbox_inches='tight')
-    fig.savefig(os.path.join(out_dir, f'{test_name}_ieee.pdf'), dpi=600, bbox_inches='tight')
+    safe_base = _sanitize_filename(test_name + '_ieee')
+    png_path = os.path.abspath(os.path.join(out_dir, f'{safe_base}.png'))
+    pdf_path = os.path.abspath(os.path.join(out_dir, f'{safe_base}.pdf'))
+    try:
+        fig.savefig(png_path, dpi=300, bbox_inches='tight')
+    except Exception as e_png:
+        print(f'Warning: failed to save PNG to {png_path}: {e_png}. Retrying with normalized path...')
+        try:
+            fig.savefig(os.path.normpath(png_path), dpi=300, bbox_inches='tight')
+        except Exception as e_png2:
+            alt_png = os.path.abspath(os.path.join(out_dir, 'plot.png'))
+            print(f'Warning: second attempt failed. Saving to fallback {alt_png}: {e_png2}')
+            try:
+                fig.savefig(alt_png, dpi=300, bbox_inches='tight')
+            except Exception as e_png3:
+                print(f'Warning: fallback PNG save failed: {e_png3}')
+    try:
+        with open(pdf_path, 'wb') as fh:
+            fig.savefig(fh, format='pdf', dpi=600, bbox_inches='tight')
+    except Exception as e:
+        print(f'Warning: failed to save PDF to {pdf_path}: {e}')
     plt.close(fig)
 
 
@@ -260,8 +311,27 @@ def _plot_combined_ieee(list_Y_true: List[np.ndarray],
         c = j % n_cols
         fig.delaxes(axes[r, c])
     fig.suptitle('Combined Test Results', fontsize=12)
-    fig.savefig(os.path.join(results_dir, 'combined_ieee.png'), dpi=300, bbox_inches='tight')
-    fig.savefig(os.path.join(results_dir, 'combined_ieee.pdf'), dpi=600, bbox_inches='tight')
+    safe_base = _sanitize_filename('combined_ieee')
+    png_path = os.path.abspath(os.path.join(results_dir, f'{safe_base}.png'))
+    pdf_path = os.path.abspath(os.path.join(results_dir, f'{safe_base}.pdf'))
+    try:
+        fig.savefig(png_path, dpi=300, bbox_inches='tight')
+    except Exception as e_png:
+        print(f'Warning: failed to save PNG to {png_path}: {e_png}. Retrying with normalized path...')
+        try:
+            fig.savefig(os.path.normpath(png_path), dpi=300, bbox_inches='tight')
+        except Exception as e_png2:
+            alt_png = os.path.abspath(os.path.join(results_dir, 'combined.png'))
+            print(f'Warning: second attempt failed. Saving to fallback {alt_png}: {e_png2}')
+            try:
+                fig.savefig(alt_png, dpi=300, bbox_inches='tight')
+            except Exception as e_png3:
+                print(f'Warning: fallback PNG save failed: {e_png3}')
+    try:
+        with open(pdf_path, 'wb') as fh:
+            fig.savefig(fh, format='pdf', dpi=600, bbox_inches='tight')
+    except Exception as e:
+        print(f'Warning: failed to save PDF to {pdf_path}: {e}')
     plt.close(fig)
 
 
@@ -272,16 +342,35 @@ if __name__ == '__main__':
     future_order = 50
     mean_flag = True
 
+    # trainlist = [
+    #     ['SW20_01', 'SW20_02', 'SW25_01', 'SW25_02', 'SW35_01', 'SW35_02'],
+    #     ['RE20_01', 'RE20_02', 'RE30_01', 'RE30_02', 'RE40_01', 'RE40_02'],
+    #     ['CJ30_01', 'CJ30_02', 'CJ40_01', 'CJ40_02', 'CJ50_01', 'CJ50_02'],
+    # ]
+    # testlist = [
+    #     ['SW20_03'], ['SW25_03'], ['SW35_03'],
+    #     ['RE20_03'], ['RE30_03'], ['RE40_03'],
+    #     ['CJ30_03'], ['CJ40_03'], ['CJ50_03'],
+    # ]
+
     trainlist = [
-        ['SW20_01', 'SW20_02'], ['SW25_01', 'SW25_02'], ['SW35_01', 'SW35_02'],
-        ['RE20_01', 'RE20_02'], ['RE30_01', 'RE30_02'], ['RE40_01', 'RE40_02'],
-        ['CJ30_01', 'CJ30_02'], ['CJ40_01', 'CJ40_02'], ['CJ50_01', 'CJ50_02'],
-    ]
+            ['BC30_01', 'BC30_02', 'BC40_01', 'BC40_02', 'BC50_01', 'BC50_02'], ['BK30_01', 'BK50_01', 'BK50_02', 'BK70_01', 'BK70_02'], ['BR20_01', 'BR20_02', 'BR30_01', 'BR30_02', 'BR40_01', 'BR40_02'],
+            ['BTW_01', 'BTW_02', 'BTW_03', 'BTW_04'], ['CBFP40_01', 'CBFP40_02', 'CBFP50_01', 'CBFP50_02'], ['CJ30_01', 'CJ30_02', 'CJ40_01', 'CJ40_02', 'CJ50_01', 'CJ50_02'],
+            ['CR05_01', 'CR05_02', 'CR15_01', 'CR15_02', 'CR15_03', 'CR15_04', 'CR25_01', 'CR25_02', 'CR25_03'], ['CS10_01', 'CS10_02', 'CS20_01', 'CS20_02', 'CS30_01', 'CS30_02'], 
+            ['DP10_01', 'DP10_02', 'DP20_01', 'DP20_02', 'DP30_01', 'DP30_02'], ['PH20_01', 'PH20_02', 'PH30_01', 'PH30_02', 'PH40_01', 'PH40_02'],
+            ['RC30_01', 'RC30_02', 'RC40_01', 'RC40_02', 'RC40_03', 'RC40_04', 'RC50_01', 'RC50_02', 'RC50_03', 'RC50_04'], ['RE20_01', 'RE20_02', 'RE30_01', 'RE30_02', 'RE40_01', 'RE40_02'],
+            ['RP30_01', 'RP30_02', 'RP40_01', 'RP40_02', 'RP50_01', 'RP50_02'], ['SG30_01', 'SG30_02', 'SG30_03', 'SG40_01', 'SG40_02', 'SG50_01', 'SG50_02'], ['SGHB_01', 'SGHB_02'],
+            ['SGLB_01', 'SGLB_02'], ['SGMB_01', 'SGMB_02'], ['ST25_01', 'ST25_02', 'ST40_01', 'ST40_02', 'ST50_01', 'ST50_02'], ['SW20_01', 'SW20_02', 'SW25_01', 'SW25_02', 'SW35_01', 'SW35_02'], 
+            ['TW05_01', 'TW05_02', 'TW15_01', 'TW15_02', 'TW25_01', 'TW25_02'], ['WB30_01', 'WB30_02', 'WB40_01', 'WB40_02', 'WB50_01', 'WB50_02'],
+            ['WBA40_01', 'WBA40_02', 'WBA40_03', 'WBA40_04', 'WBA60_01', 'WBA60_02', 'WBA60_03', 'WBA80_01', 'WBA80_02'], ['WBHB_01', 'WBHB_02'], ['WBLB_01', 'WBLB_02'], ['WBMB_01', 'WBMB_02']
+        ]
     testlist = [
-        ['SW20_03'], ['SW25_03'], ['SW35_03'],
-        ['RE20_03'], ['RE30_03'], ['RE40_03'],
-        ['CJ30_03'], ['CJ40_03'], ['CJ50_03'],
-    ]
+            ['BC30_03'], ['BC40_03'], ['BC50_03'], ['BK30_02'], ['BK50_03'], ['BK70_03'], ['BR20_03'], ['BR30_03'], ['BR40_03'], ['BTW_05'], ['CBFP40_03'], ['CBFP50_03'], ['CJ30_03'], ['CJ40_03'],
+            ['CJ50_03'], ['CR05_03'], ['CR15_05'], ['CR25_04'], ['CS10_03'], ['CS20_03'], ['CS30_03'], ['DP10_03'], ['DP20_03'], ['DP30_03'], ['PH20_03'], ['PH30_03'], ['PH40_03'], ['RC30_03'],
+            ['RC40_05'], ['RC50_05'], ['RE20_03'], ['RE30_03'], ['RE40_03'], ['RP30_03'], ['RP40_03'], ['RP50_03'], ['SG30_04'], ['SG40_03'], ['SG50_03'], ['SGHB_03'], ['SGLB_03'], ['SGMB_03'],
+            ['ST25_03'], ['ST40_03'], ['ST50_03'], ['SW20_03'], ['SW25_03'], ['SW35_03'], ['TW05_03'], ['TW15_03'], ['TW25_03'], ['WB30_03'], ['WB40_03'], ['WB50_03'], ['WBA40_05'], ['WBA60_04'],
+            ['WBA80_03'], ['WBHB_03'], ['WBLB_03'], ['WBMB_03']
+        ]
 
     pipeline(trainlist, testlist, channel_in, channel_out, past_order, future_order, mean_flag)
 

@@ -4,10 +4,16 @@ import numpy as np
 import scipy.io as scio
 from typing import List, Dict
 from STFT import compute_stft, read_mat
+from sklearn.decomposition import NMF
+from scipy.stats import kurtosis as sp_kurtosis, skew as sp_skew
+import config
 
 
 def extract_condition_prefix(names: List[str]) -> str:
-    return names[0].split('_')[0]
+    token = names[0].split('_')[0]
+    # Use coarse class by stripping digits, e.g., 'SW20' -> 'SW'
+    coarse = ''.join([ch for ch in token if ch.isalpha()])
+    return coarse
 
 
 def _fixed_length_feature_from_stft(abs_z: np.ndarray, x: np.ndarray) -> np.ndarray:
@@ -36,7 +42,127 @@ def compute_feature_for_name(name: str) -> np.ndarray:
     fs, f, t, z, x, y = compute_stft(name)
     Z = np.abs(z)
     x = np.squeeze(x)
-    return _fixed_length_feature_from_stft(Z, x)
+
+    # Base 10-dim features from |STFT| and time signal
+    base_feat = _fixed_length_feature_from_stft(Z, x)
+
+    # Build NMF-based features per component (15 features each)
+    #  - Use original multi-channel X for time-domain statistics
+    trainFile = ['../Data/matdata/' + name + '.mat']
+    X, _ = read_mat(trainFile)
+
+    nmf_n = int(getattr(config, 'NMF_N_COMPONENTS', 1))
+    nmf_random_state = int(getattr(config, 'RANDOM_STATE', 0))
+
+    # Time-domain statistics across channels (median per-channel kurtosis/skewness)
+    # Replicated per component to form 15 features/component
+    kurt_list = []
+    skew_list = []
+    for col in X.T:
+        v = np.squeeze(col)
+        try:
+            k = float(sp_kurtosis(v, fisher=True, bias=False))
+        except Exception:
+            k = float('nan')
+        try:
+            s = float(sp_skew(v, bias=False))
+        except Exception:
+            s = float('nan')
+        kurt_list.append(k)
+        skew_list.append(s)
+    kurt_time = float(np.nanmedian(np.array(kurt_list)))
+    skewness_time = float(np.nanmedian(np.array(skew_list)))
+
+    # NMF decomposition on |Z|: Z ~ W @ H, W:(F,K), H:(K,T)
+    F, T = Z.shape
+    nmf_n = max(1, min(int(nmf_n), min(F, T)))
+    nmf_model = NMF(n_components=nmf_n, init='random', random_state=nmf_random_state)
+    W = nmf_model.fit_transform(Z)
+    H = nmf_model.components_
+
+    # Per-component 15-dim features
+    comp_feats = []
+    alpha = 2.0
+    # Renyi entropy computed on the full normalized |Z| to mirror compute_tf_feature
+    sZ = float(np.sum(Z))
+    if sZ > 0.0:
+        pZ = Z / sZ
+        renyi_entropy_global = float((1.0 / (1.0 - alpha)) * np.log2(np.sum(np.power(pZ, alpha))))
+    else:
+        renyi_entropy_global = 0.0
+    for k in range(nmf_n):
+        w = np.maximum(W[:, k], 0.0)
+        h = np.maximum(H[k, :], 0.0)
+
+        rows = w.size
+        cols = h.size
+
+        # Sparsity (following the style used in STFT.compute_tf_feature)
+        l1_w = float(np.sum(w))
+        l2sq_w = float(np.sum(w * w)) + 1e-12
+        sparsity_coff_vector = (np.sqrt(rows) - l1_w / l2sq_w) / (np.sqrt(rows) - 1.0 + 1e-12)
+
+        l1_h = float(np.sum(h))
+        l2sq_h = float(np.sum(h * h)) + 1e-12
+        sparsity_base_vector = (np.sqrt(cols) - l1_h / l2sq_h) / (np.sqrt(cols) - 1.0 + 1e-12)
+
+        # Smoothness (discontinuity)
+        discontinuity_coff_vector = float(np.linalg.norm(np.diff(w), 2)) if rows > 1 else 0.0
+        discontinuity_base_vector = float(np.linalg.norm(np.diff(h), 2)) if cols > 1 else 0.0
+
+        # Use global Renyi entropy same as compute_tf_feature
+        renyi_entropy = renyi_entropy_global
+
+        # Statistics
+        max_coff_vector = float(np.max(w)) if rows > 0 else 0.0
+        max_base_vector = float(np.max(h)) if cols > 0 else 0.0
+        std_coff_vector = float(np.std(w, ddof=1)) if rows > 1 else 0.0
+        std_base_vector = float(np.std(h, ddof=1)) if cols > 1 else 0.0
+
+        # Higher-order moments
+        try:
+            kurt_coff_vector = float(sp_kurtosis(w, fisher=True, bias=False)) if rows > 3 else 0.0
+        except Exception:
+            kurt_coff_vector = 0.0
+        try:
+            kurt_base_vector = float(sp_kurtosis(h, fisher=True, bias=False)) if cols > 3 else 0.0
+        except Exception:
+            kurt_base_vector = 0.0
+        try:
+            skewness_coff_vector = float(sp_skew(w, bias=False)) if rows > 2 else 0.0
+        except Exception:
+            skewness_coff_vector = 0.0
+        try:
+            skewness_base_vector = float(sp_skew(h, bias=False)) if cols > 2 else 0.0
+        except Exception:
+            skewness_base_vector = 0.0
+
+        comp_feat = [
+            sparsity_coff_vector,
+            sparsity_base_vector,
+            discontinuity_coff_vector,
+            discontinuity_base_vector,
+            renyi_entropy,
+            max_coff_vector,
+            max_base_vector,
+            std_coff_vector,
+            std_base_vector,
+            kurt_coff_vector,
+            kurt_base_vector,
+            skewness_coff_vector,
+            skewness_base_vector,
+            kurt_time,
+            skewness_time,
+        ]
+        comp_feats.append(np.array(comp_feat, dtype=np.float32))
+
+    if len(comp_feats) > 0:
+        nmf_feat = np.concatenate(comp_feats, axis=0)
+    else:
+        nmf_feat = np.zeros((0,), dtype=np.float32)
+
+    full_feat = np.concatenate([base_feat.astype(np.float32, copy=False), nmf_feat], axis=0)
+    return full_feat
 
 
 def build_features_for_condition(train_names: List[str]) -> np.ndarray:
