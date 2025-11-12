@@ -76,7 +76,7 @@ legend({'Measured', 'Estimated'}, 'Location', 'southeast', 'FontSize', legend_fo
 text(0.02, 0.95, sprintf('$p$(BC)=%.3f', p_BC_first), 'Units', 'normalized', 'HorizontalAlignment', 'left', 'VerticalAlignment', 'top', 'Interpreter', 'latex');
 xlim([0, max(t1)]);
 text(0.02, 0.85, sprintf('MAPE=%.1f%%', fz_mape1), 'Units', 'normalized', 'HorizontalAlignment', 'left', 'VerticalAlignment', 'top', 'FontSize', legend_fontsize);
-text(0.02, 0.2, '(a)', 'Units', 'normalized', 'HorizontalAlignment', 'left', 'VerticalAlignment', 'top', 'FontSize', label_fontsize);
+text(0.02, 0.2, '(a)', 'Units', 'normalized', 'HorizontalAlignment', 'left', 'VerticalAlignment', 'top', 'FontSize', label_fontsize, 'FontWeight', 'bold');
 xlim([0, max(t1)]);
 grid on;
 % title('(a) Estimation performance for F_z during the first encounter with BC50');
@@ -90,7 +90,7 @@ legend({'Measured', 'Estimated'}, 'Location', 'southeast', 'FontSize', legend_fo
 text(0.02, 0.95, sprintf('$p$(BC)=%.3f', p_BC_second), 'Units', 'normalized', 'HorizontalAlignment', 'left', 'VerticalAlignment', 'top', 'Interpreter', 'latex');
 xlim([0, max(t1)]);
 text(0.02, 0.85, sprintf('MAPE=%.1f%%', fz_mape2), 'Units', 'normalized', 'HorizontalAlignment', 'left', 'VerticalAlignment', 'top', 'FontSize', legend_fontsize);
-text(0.02, 0.2, '(b)', 'Units', 'normalized', 'HorizontalAlignment', 'left', 'VerticalAlignment', 'top', 'FontSize', label_fontsize);
+text(0.02, 0.2, '(b)', 'Units', 'normalized', 'HorizontalAlignment', 'left', 'VerticalAlignment', 'top', 'FontSize', label_fontsize, 'FontWeight', 'bold');
 xlim([0, max(t1)]);
 grid on;
 % title('(b) Estimation performance for F_z during the second encounter with BC50');
@@ -116,7 +116,7 @@ xlim([0, maxT]);
 grid on; box on;
 text(0.02, 0.95, sprintf('MAPE(BC50\\_01)=%.1f%%', fz_mape1), 'Units', 'normalized', 'HorizontalAlignment', 'left', 'VerticalAlignment', 'top');
 text(0.02, 0.85, sprintf('MAPE(BC50\\_02)=%.1f%%', fz_mape2), 'Units', 'normalized', 'HorizontalAlignment', 'left', 'VerticalAlignment', 'top');
-text(0.02, 0.2, '(c)', 'Units', 'normalized', 'HorizontalAlignment', 'left', 'VerticalAlignment', 'top', 'FontSize', label_fontsize);
+text(0.02, 0.2, '(c)', 'Units', 'normalized', 'HorizontalAlignment', 'left', 'VerticalAlignment', 'top', 'FontSize', label_fontsize, 'FontWeight', 'bold');
 % title('(c) Comparison of initial error (1st) vs adapted error (2nd)');
 
 % (d) Novel condition RC30 (first encounter)
@@ -127,7 +127,7 @@ xlabel('Time (s)', 'FontSize', label_fontsize); ylabel('$F_z$', 'Interpreter', '
 text(0.02, 0.95, sprintf('$p$(RE)=%.3f', p_RE_RC30), 'Units', 'normalized', 'HorizontalAlignment', 'left', 'VerticalAlignment', 'top', 'Interpreter', 'latex');
 xlim([0, max(t3)]);
 text(0.02, 0.85, sprintf('MAPE=%.1f%%', fz_mape3), 'Units', 'normalized', 'HorizontalAlignment', 'left', 'VerticalAlignment', 'top', 'FontSize', legend_fontsize);
-text(0.02, 0.2, '(d)', 'Units', 'normalized', 'HorizontalAlignment', 'left', 'VerticalAlignment', 'top', 'FontSize', label_fontsize);
+text(0.02, 0.2, '(d)', 'Units', 'normalized', 'HorizontalAlignment', 'left', 'VerticalAlignment', 'top', 'FontSize', label_fontsize, 'FontWeight', 'bold');
 grid on;
 % title('(d) Adaptation process when encountering the novel condition RC30');
 % Ensure output directory exists and export using absolute paths
